@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Python Executer (Browser)</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono",
+          Menlo, monospace;
+      }
+
+      body {
+        background: #0d1117;
+        color: #c9d1d9;
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+      }
+
+      .terminal {
+        width: min(960px, 100%);
+        background: #161b22;
+        border-radius: 16px;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+        padding: 24px;
+        display: grid;
+        gap: 16px;
+      }
+
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      h1 {
+        font-size: 22px;
+        margin: 0;
+      }
+
+      .status {
+        font-size: 14px;
+        color: #8b949e;
+      }
+
+      .output {
+        min-height: 240px;
+        max-height: 360px;
+        overflow-y: auto;
+        padding: 16px;
+        border-radius: 12px;
+        background: #0b0f15;
+        border: 1px solid #30363d;
+        white-space: pre-wrap;
+      }
+
+      .output .line + .line {
+        margin-top: 8px;
+      }
+
+      .output .prompt {
+        color: #58a6ff;
+      }
+
+      .output .error {
+        color: #f85149;
+      }
+
+      .input-row {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr auto;
+      }
+
+      textarea {
+        background: #0b0f15;
+        color: inherit;
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        padding: 12px;
+        min-height: 80px;
+        resize: vertical;
+        font-size: 14px;
+      }
+
+      button {
+        background: #238636;
+        color: white;
+        border: none;
+        border-radius: 12px;
+        padding: 12px 20px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        background: #30363d;
+        cursor: not-allowed;
+      }
+
+      .help {
+        font-size: 13px;
+        color: #8b949e;
+      }
+    </style>
+    <script type="module">
+      import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js";
+
+      const output = document.getElementById("output");
+      const input = document.getElementById("input");
+      const runButton = document.getElementById("run");
+      const status = document.getElementById("status");
+
+      const appendLine = (text, className) => {
+        const line = document.createElement("div");
+        line.className = `line ${className ?? ""}`.trim();
+        line.textContent = text;
+        output.appendChild(line);
+        output.scrollTop = output.scrollHeight;
+      };
+
+      const showHelp = () => {
+        appendLine("Python Executer (Browser)");
+        appendLine(":help   Hilfe anzeigen");
+        appendLine(":exit   Eingabe leeren");
+        appendLine(":reset  Umgebung zurücksetzen");
+        appendLine(":vars   Aktuelle Variablen anzeigen");
+      };
+
+      const init = async () => {
+        status.textContent = "Pyodide wird geladen...";
+        runButton.disabled = true;
+        input.disabled = true;
+
+        const pyodide = await loadPyodide();
+        pyodide.runPython(`
+import traceback
+
+globals_dict = {}
+
+def _run(code, g):
+    try:
+        compiled = compile(code, "<input>", "eval")
+        return eval(compiled, g)
+    except SyntaxError:
+        compiled = compile(code, "<input>", "exec")
+        exec(compiled, g)
+        return None
+`);
+
+        pyodide.setStdout({
+          batched: (text) => {
+            if (text.trim()) {
+              appendLine(text);
+            }
+          },
+        });
+
+        pyodide.setStderr({
+          batched: (text) => {
+            if (text.trim()) {
+              appendLine(text, "error");
+            }
+          },
+        });
+
+        const globals = pyodide.globals.get("globals_dict");
+
+        const handleCommand = async () => {
+          const code = input.value.trim();
+          if (!code) {
+            return;
+          }
+
+          appendLine(`py> ${code}`, "prompt");
+          input.value = "";
+
+          if (code === ":help") {
+            showHelp();
+            return;
+          }
+          if (code === ":exit") {
+            appendLine("Eingabe geleert.");
+            return;
+          }
+          if (code === ":reset") {
+            globals.clear();
+            appendLine("Umgebung zurückgesetzt.");
+            return;
+          }
+          if (code === ":vars") {
+            pyodide.globals.set("_globals_view", globals);
+            const varsText = pyodide.runPython(`
+items = sorted((k, v) for k, v in _globals_view.items() if not k.startswith("__"))
+"\n".join(f"{k} = {v!r}" for k, v in items) if items else "(keine Variablen)"
+`);
+            appendLine(varsText);
+            return;
+          }
+
+          try {
+            pyodide.globals.set("input_code", code);
+            const result = pyodide.runPython("_run(input_code, globals_dict)");
+            if (result !== undefined && result !== null) {
+              appendLine(String(result));
+            }
+            if (result && result.destroy) {
+              result.destroy();
+            }
+          } catch (error) {
+            appendLine(error.toString(), "error");
+          }
+        };
+
+        runButton.addEventListener("click", handleCommand);
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            handleCommand();
+          }
+        });
+
+        status.textContent = "Bereit";
+        runButton.disabled = false;
+        input.disabled = false;
+        showHelp();
+      };
+
+      init();
+    </script>
+  </head>
+  <body>
+    <div class="terminal">
+      <header>
+        <h1>Python Executer (Browser)</h1>
+        <div class="status" id="status">Lade...</div>
+      </header>
+
+      <div id="output" class="output"></div>
+
+      <div class="input-row">
+        <textarea
+          id="input"
+          placeholder="Python-Code eingeben (Strg+Enter zum Ausführen)"
+        ></textarea>
+        <button id="run">Ausführen</button>
+      </div>
+
+      <div class="help">
+        Tipp: Drücke Strg+Enter (oder Cmd+Enter) zum Ausführen.
+      </div>
+    </div>
+  </body>
+</html>
